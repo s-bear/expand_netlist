@@ -1,0 +1,458 @@
+# expand_netlist.py
+# Copyright 2018 Samuel B. Powell, samuel.powell@uq.edu.au
+
+"""
+@package
+Expand a netlist with "plural" names into a KiCad Pcbnew netlist. This replicates any
+components, pins, or nets with plural names as described below. It cannot
+handle hierarchical sheets yet.
+
+Command line:
+python "pathToFile/expand_netlist.py" "%I" "%O.net"
+
+Components references, pin names, and net names (labels) are expanded using the following operators:
+  
+  Lists are separated by commas: "A,B,C" -> "A", "B", "C"
+
+  Ranges are written as either "start:stop", or "start:stop:step"
+    start and stop must be non-negative integers or uppercase letters.
+    step must be a positive integer.
+    start and stop will both be included in the range unless you do something silly with step.
+    stop may be less than start, in which case the range will count down. A negative step need not be specified.
+    Valid letters are in "ABCDEFGHJKLMNPRTUVWY". IOQSXZ are excluded.
+    Examples:
+      "1:3" -> "1", "2", "3"        "3:1" -> "3", "2", "1"
+      "0:10:5" -> "0","5","10"      "A:D" -> "A", "B", "C", "D"
+      "A:D:2" -> "A", "C" (this is an example of doing something silly with step)
+
+  The vertical bar "|" acts on lists and/or ranges, pairing each combination together.
+    "A,B|1:3" -> "A1", "A2", "A3", "B1", "B2", "B3"
+
+  Brackets "[]" replicate the preceeding and following text for each item within:
+    "A[1,2,3]B" -> "A1B", "A2B", "A3B"
+    To keep the brackets, double them: "A[[1]]B" -> "A[1]B"
+    If multiple replications occur in the same name it behaves similarly to the vertical bar:
+    "A[1,2].B[3,4]" -> "A1.B3", "A1.B4", "A2.B3", "A2.B4"
+  
+  A backtick "`" indicates that all following text should be discarded:
+    "A[1:5]`1" -> "A1", "A2", ...
+    This is to keep KiCad's annotation checker happy on netlist export.
+    I.e. KiCad will not recognize "A[1:5]" as a valid reference before running this script,
+     but it will accept "A[1:5]`1".
+
+When expanding nets, there are two valid cases for how they are connected:
+1) If the net name or any of the nodes the net connects to are singular,
+   then all of the nodes are shorted together.
+   E.g. Component "U[0:7]" pin "VCC" ("U[0:7].VCC") is connected to "3V3" by an unlabeled wire.
+   Each of "U0.VCC" through "U7.VCC" will be shorted to "3V3".
+2) If the net name and each node it connects to expand to name lists with the same
+   cardinality, then a net is created connecting each corresponding node.
+   E.g. Component "U1.OUT[0:7]" is connected to "D[15:8].A" by an unlabeled wire.
+   8 nets are created connecting "U1.OUT0" to "D15.A", "U1.OUT1" to "D14.A", ...
+Any other situations are treated as an error.
+"""
+
+from __future__ import print_function, division
+
+import kicad_netlist_reader
+import re
+import sys
+import time
+
+#monkey patch kicad_netlist_reader
+def xml_copy(self,deep=True):
+    """Copy and xmlElement, do not copy children unless deep is True"""
+    other = kicad_netlist_reader.xmlElement(self.name,self.parent)
+    other.attributes = self.attributes.copy()
+    other.chars = self.chars
+    if deep:
+        for c in self.children:
+            c = c.copy(True)
+            c.parent = other
+            other.children.append(c)
+    else:
+        other.children = self.children.copy()
+    return other
+
+def xml_formatNET(self,nestLevel=0):
+    """Return xmlElement formatted as KiCad net
+    nestLevel -- increases by one for each level of nesting.
+    """
+    s = ""
+    
+    indent = ""
+    for i in range(nestLevel):
+        indent += "  "
+    
+    s += indent + "(" + self.name
+    for a in self.attributes:
+        s += " (" + a
+        val = self.attributes[a]
+        if not val:
+            s += " \"\")"
+        elif re.search(r'[()\s]',val):
+            s += " \"" + val + "\")"
+        else:
+            s += " " + val + ")"
+    
+    if self.chars:
+        if re.search(r'[()\s]',self.chars):
+            s += " \"" + self.chars + "\""
+        else:
+            s += " " + self.chars
+    
+    for c in self.children:
+        s += "\n" + c.formatNET(nestLevel+1)
+    
+    s += ")"
+    return s
+
+def net_formatNET(self):
+    """Return the netlist formatted as a KiCad .net"""
+    return self.tree.formatNET()
+
+kicad_netlist_reader.xmlElement.copy = xml_copy
+kicad_netlist_reader.xmlElement.formatNET = xml_formatNET
+kicad_netlist_reader.netlist.formatNET = net_formatNET
+
+
+
+def outer_join(lists, delim='', prefix='',suffix=''):
+    """join a list of lists of strings in an outer-product fashion"""
+    strings = []
+    if len(lists) > 1:
+        for s in lists[0]:
+            strings.extend(outer_join(lists[1:], delim, prefix+s+delim, suffix))
+    else:
+        for s in lists[0]:
+            strings.append(prefix + s + suffix)
+    return strings
+
+_letters = 'ABCDEFGHJKLMNPRTUVWY'
+def parse_letter_count(lc_str):
+    """parse a number in the letter counting system
+    Valid letters are in "ABCDEFGHJKLMNPRTUVWY". IOQSXZ are excluded.
+    """
+    #the A, ..., Y, AA ... counting system is weird
+    #in multi-digit numbers, all but the last digit has value +1 (AA = 10, not 00)
+    def get_letter_val(c,s):
+        i = _letters.find(c)
+        if i < 0: raise RuntimeError('invalid character in letter-count string: "'+c+'" in "'+lc_str+'"')
+        return i
+
+    if len(lc_str) == 1:
+        val = get_letter_val(lc_str, lc_str)
+    else:
+        val = 0
+        for c in lc_str[:-1]:
+            val += 1 + get_letter_val(c, lc_str)
+            val *= 20
+        val += get_letter_val(lc_str[-1], lc_str)
+    return val
+
+def letter_count(val):
+    """convert a non-negative int to a letter count"""
+    #the first digit is base 20
+    val += 1 #bcs the counting system is a bit strange
+    count = ''
+    while val > 0:
+        val -= 1
+        count = _letters[val%20] + count
+        val = val//20
+    return count
+
+def expand_range(start,stop,step=None):
+    """expand a range into a list of strings
+    start and stop must non-negative integers or uppercase letters.
+    stop may be less than start, in which the range will count down.
+    step must be a positive (non-zero) integer, even if stop is less than start.
+    start and stop will both be included unless you do something silly with step.
+    valid letters are in "ABCDEFGHJKLMNPRTUVWY". IOQSXZ are excluded.
+    """
+    #assumes correct syntax
+    if start[0] in _letters:
+        lc = True
+        start = parse_letter_count(start)
+        stop = parse_letter_count(stop)
+    else:
+        lc = False
+        start = int(start)
+        stop = int(stop)
+    if step is None:
+        step = 1
+    else:
+        step = int(step)
+        if step <= 0:
+            raise RuntimeError('step must be positive (non-zero) integer')
+    if stop < start:
+        stop -= 1 #to make bounds inclusive
+        step = -step
+    else:
+        stop += 1 #to make bounds inclusive
+    r = range(start,stop,step)
+    if lc:
+        return [letter_count(i) for i in r]
+    else:
+        return [str(i) for i in r]
+
+_expand_tokens = re.compile(r'((?:\[|\]){1,2}|(?:[|,:/]))')
+def expand_name(name):
+    #discard all after `
+    i = name.find('`')
+    if i >= 0: name = name[:i]
+    #quick search before expensive parsing
+    m = _expand_tokens.search(name)
+    if m is None:
+        return [name]
+    #split the name into tokens
+    tokens = _expand_tokens.split(name)
+    #the regex only matches the operators, so the split function will
+    # make it so that the operators will be in the odd indices of tokens
+    tokens.extend([']','']) #simplifies the logic below
+    stack = []
+    name_list = [tokens[0]]
+    i = 1
+    while i < len(tokens):
+        next_op,next_name = tokens[i:i+2]
+        if next_op[0] == '[':
+            #push current state onto stack
+            stack.append([name_list,next_op])
+            name_list = [next_name]
+            i += 2
+        elif next_op == ',':
+            name_list.append(next_name)
+            i += 2
+        elif next_op == ':':
+            start = name_list.pop()
+            stop = next_name
+            i += 2
+            #look ahead to get step
+            if i + 1 < len(tokens) and tokens[i] == ':':
+                step = tokens[i+1]
+                i += 2
+            else:
+                step = None
+            name_list.extend(expand_range(start,stop,step))
+        elif next_op == '|':
+            # | is shorthand for ][
+            if not stack:
+                #the stack was empty, pretend we opened the whole thing with [
+                stack.append([[''],'['])
+            #put our stuff on the top of the stack
+            stack[-1].extend([name_list,next_op])
+            name_list = [next_name]
+            i += 2
+        elif next_op == '/':
+            # / is also like ][, but it stays in the name
+            if not stack:
+                #the stack was empty, pretend we opened the whole thing with [
+                stack.append([[''],'['])
+            #put our stuff on the top of the stack
+            stack[-1].extend([name_list,next_op])
+            name_list = [next_name]
+            i += 2
+        elif next_op[0] == ']':
+            if not stack:
+                #the stack was empty, pretend we opened the whole thing with [
+                stack.append([[''],'['])
+            #put our stuff on the top of the stack
+            stack[-1].extend([name_list,next_op,[next_name]])
+            i += 2
+            if i + 1 < len(tokens) and tokens[i][0] == '[':
+                #look ahead to see if we're doing more
+                stack[-1].extend([tokens[i]])
+                name_list = [tokens[i+1]]
+                i += 2
+            else:
+                #no, go ahead and close this one out
+                tos = stack.pop()
+                name_list = tos[0]
+                prefix = name_list.pop()
+                join_list = []
+                for item in tos[1:]:
+                    if item == '[' or item == ']' or item == '|': continue
+                    elif item == '[[' or item ==']]' or item == '/':
+                        join_list.append([item[0]])
+                    else:
+                        join_list.append(item)
+                name_list.extend(outer_join(join_list,'',prefix))
+        else:
+            pass #error!
+    return name_list
+
+class tstamper:
+    def __init__(self,start=None,use_hex=True):
+        if start is None:
+            self.next = int(time.time())
+        else:
+            self.next = start
+        self.use_hex = use_hex
+    
+    def __call__(self):
+        if self.use_hex:
+            s = hex(self.next)[2:].upper()
+        else:
+            s = str(self.next)
+        self.next += 1
+        return s
+
+def transform(netlist):
+    fail = False
+    #initial "timestamp" for ID'ing new components:
+    ts = tstamper()
+
+    #we work with the xmlElement objects rather than the wrappers
+    #we'll fix up the wrapper objects later
+    
+    #first deal with replicating components:
+    if netlist.components:
+        components = netlist.components[0].element.parent
+        new_kids = []
+        
+        for child in components.children:
+            ref = child.attributes['ref']
+            refs = expand_name(ref)
+            if len(refs) > 1:
+                for r in refs:
+                    c = child.copy() #deep copy
+                    c.setAttribute('ref',r)
+                    c.getChild('tstamp').setChars(ts())
+                    new_kids.append(c)
+            else: #not plural, don't change
+                new_kids.append(child)
+        components.children = new_kids
+    #now with pins in each libpart
+    for libpart in netlist.libparts:
+        pins = libpart.element.getChild('pins')
+        new_kids = []
+        for pin in pins.children:
+            num = pin.attributes['num']
+            name = pin.attributes['name']
+            
+            nums = expand_name(num)
+            names = expand_name(name)
+
+            if len(nums) > 1:
+                if len(names) > 1:  # Case 1: both are plural
+                    if len(nums) != len(names): #uh oh!
+                        print("Error: Mismatched pin nums and names in libpart:",libpart.getLibName(), "/", libpart.getPartName(), file=sys.stderr)
+                        fail = True
+                        continue #skip to next pin
+                    for num,name in zip(nums,names):
+                        p = pin.copy() #deep copy
+                        p.setAttribute('num',num)
+                        p.setAttribute('name',name)
+                        new_kids.append(p)
+                else: #case 2: plural nums, single name
+                    for num in nums:
+                        p = pin.copy()
+                        p.setAttribute('num',num)
+                        new_kids.append(p)
+            else: #single num
+                if len(names) > 1:  # case 3: single num, plural name
+                    #does this case even make sense?
+                    for name in names:
+                        p = pin.copy()
+                        p.setAttribute('name',name)
+                        new_kids.append(p)
+                else:  # case 4: single num, single name
+                    new_kids.append(pin)
+        pins.children = new_kids
+    #now to deal with nets:
+    if netlist.nets:
+        nets = netlist.nets[0].parent
+        new_nets = []
+        next_code = tstamper(1,False)
+        for net in nets.children:
+            #each net has 2 attributes: code & name
+            # and nodes as children, each with 'ref' and 'pin' attributes
+            #If the net was labeled, it's name is that label
+            #if the net is automatically named, it name will be taken from
+            #one of the nodes it's connected to: "Net-({ref}-Pad{pin})"
+            
+            #there are 2 valid cases here:
+            # 1) if any of the names are singular, we short everything together in one net
+            # 2) if all of the names are plural to the same degree, we make new nets for each
+
+            #this is a two-pass algorithm
+            #first we expand everything
+            name = net.attributes['name']
+            names = expand_name(name)
+            short = (len(names) == 1)
+            len_mismatch = None
+            node_refs_pins = []
+            for node in net.children:
+                ref,pin = node.attributes['ref'], node.attributes['pin']
+                refs = expand_name(ref)
+                pins = expand_name(pin)
+                nrp = [(node,r,p) for r in refs for p in pins]
+                node_refs_pins.append(nrp)
+                if len(nrp) == 1:
+                    short = True
+                elif len(nrp) != len(names):
+                    len_mismatch = ref,pin
+                    #we check for the length mismatch here, but we can't call it an error
+                    # yet because we don't know for sure if we're shorting everything
+            #second pass, reconstruct net(s)
+            if short:
+                new_kids = []
+                for nrps in node_refs_pins:
+                    for node,ref,pin in nrps:
+                        n = node.copy()
+                        n.attributes['ref'] = ref
+                        n.attributes['pin'] = pin
+                        new_kids.append(n)
+                net.children = new_kids
+                net.attributes['code'] = next_code()
+                new_nets.append(net)
+            else:
+                #not shorting, everything should have the same length
+                if len_mismatch is not None:
+                    ref,pin = len_mismatch
+                    print('Error: mismatch between net and node:',name,'!= (',ref,pin,')')
+                    fail = True
+                    continue #skip to next net
+                #iterate through the net names and expanded nodes together
+                for name, nrps in zip(names, zip(*node_refs_pins)):
+                    new_kids = []
+                    for node,ref,pin in nrps:
+                        n = node.copy()
+                        n.attributes['ref'] = ref
+                        n.attributes['pin'] = pin
+                        new_kids.append(n)
+                    n = net.copy()
+                    n.attributes['name'] = name
+                    n.attributes['code'] = next_code()
+                    n.children = new_kids
+                    new_nets.append(n)
+            #done with the net
+        #done making new_nets
+        nets.children = new_nets
+
+    if fail:
+        sys.exit(1)
+
+if __name__ == '__main__':
+
+    #check usage:
+    if len(sys.argv) != 3:
+        print("Usage: ", __file__, "<generic_netlist.xml> <output.net>", file=sys.stderr)
+        sys.exit(1)
+    
+    #load the netlist:
+    net = kicad_netlist_reader.netlist(sys.argv[1])
+
+    #open output
+    try:
+        f = open(sys.argv[2],'w')
+    except IOError:
+        e = "Can't open output file for writing: " + sys.argv[2]
+        sys.exit(1)
+
+    #edit netlist in place
+    transform(net)
+
+    #save to file
+    print(net.formatNET().encode('utf8'),file=f)
+    f.close()
+    sys.exit(0)
