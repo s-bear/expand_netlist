@@ -59,5 +59,6 @@ When expanding nets, there are two valid cases for how they are connected:
 
 ## To Do:
 
--[ ] Add syntax checking to the parser.
--[ ] Add error messages.
+- [ ] Add syntax checking to the parser.
+- [ ] Add error messages.
+- [ ] Convert to C & integrate with the tool!
