@@ -58,7 +58,7 @@ When expanding nets, there are two valid cases for how they are connected:
 **Any other situations are treated as an error.**
 
 ## To Do:
-
+- [ ] Images of example schematics.
 - [ ] Add syntax checking to the parser.
 - [ ] Add error messages.
 - [ ] Support hierarchical schematics.
