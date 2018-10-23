@@ -4,6 +4,9 @@ A plugin for multiple instance and bus naming for KiCad's Eeschema.
 
 Use this script in Eeschema's BOM plugin interface to generate Pcbnew netlists with multiple instance and bus naming. Components, pins, and nets with "plural" names, as described below, will be replicated. Hierarchical sheets are not supported.
 
+## Installing:
+Copy `expand_netlist.py` into the plugins folder of your KiCad installation. This script requires the `kicad_netlist_reader.py` located there. The default location of the plugins folder on Windows is `C:\Program Files\KiCad\bin\scripting\plugins`.
+
 ## Name expansion rules:
 Components references, pin names, and net names (labels) are expanded using the following operators:
   
@@ -11,11 +14,11 @@ Components references, pin names, and net names (labels) are expanded using the 
 `A,B,C` -> `A`, `B`, `C`
 
 #### Ranges are shorthand for lists of numbers or letters:
-Both `start:stop` and `start:stop:step` are valid syntax.
-- `start` and `stop` must be non-negative integers or uppercase letters.
+Both `first:last` and `first:last:step` are valid syntax.
+- `first` and `last` must be non-negative integers or uppercase letters.
 - `step` must be a positive integer.
-- `start` and `stop` will both be included in the range unless you do something silly with `step`.
-- `stop` may be less than `start`, in which case the range will count down. A negative `step` need not be specified.
+- `first` and `last` will both be included in the range unless the `step` doesn't align.
+- `last` may be less than `start`, in which case the range will count down. A negative `step` need not be specified.
 - Valid letters are in `ABCDEFGHJKLMNPRTUVWY`. `IOQSXZ` are excluded, which is typical of BGA lettering. After 'Y' comes 'AA'.
 
 Examples:
@@ -23,7 +26,7 @@ Examples:
 - `3:1` -> `3`, `2`, `1`
 - `0:10:5` -> `0`,`5`,`10`
 - `A:D` -> `A`, `B`, `C`, `D`
-- `A:D:2` -> `A`, `C` (this is an example of doing something silly with step)
+- `A:D:2` -> `A`, `C` (This is an example of `step` preventing `last` from being included.)
 
 #### The vertical bar `|` acts on lists and/or ranges, pairing each combination together:
 `A,B|1:3` -> `A1`, `A2`, `A3`, `B1`, `B2`, `B3`
@@ -49,4 +52,5 @@ When expanding nets, there are two valid cases for how they are connected:
    cardinality, then a net is created connecting each corresponding node.
    - E.g. Component `U1.OUT[0:7]` is connected to `D[15:8].A` by an unlabeled wire.
    8 nets are created connecting `U1.OUT0` to `D15.A`, `U1.OUT1` to `D14.A`, ...
-#### Any other situations are treated as an error.
+
+**Any other situations are treated as an error.**
