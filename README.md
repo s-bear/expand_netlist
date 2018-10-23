@@ -7,6 +7,8 @@ Use this script in Eeschema's BOM plugin interface to generate Pcbnew netlists w
 ## Installing:
 Copy `expand_netlist.py` into the plugins folder of your KiCad installation. This script requires the `kicad_netlist_reader.py` located there. The default location of the plugins folder on Windows is `C:\Program Files\KiCad\bin\scripting\plugins`.
 
+To use the script in Eeschema, add it as a BOM plugin. The BOM plugin interface is preferable to the netlist export interface because it displays the documentation and reports error messages.
+
 ## Name expansion rules:
 Components references, pin names, and net names (labels) are expanded using the following operators:
   
@@ -54,3 +56,8 @@ When expanding nets, there are two valid cases for how they are connected:
    8 nets are created connecting `U1.OUT0` to `D15.A`, `U1.OUT1` to `D14.A`, ...
 
 **Any other situations are treated as an error.**
+
+## To Do:
+
+-[ ] Add syntax checking to the parser.
+-[ ] Add error messages.
