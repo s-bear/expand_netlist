@@ -40,9 +40,9 @@ Examples:
 If multiple replications occur in the same name it behaves similarly to the vertical bar:
 - `A[1,2].B[3,4]` -> `A1.B3`, `A1.B4`, `A2.B3`, `A2.B4`
   
-#### A backtick "\`" indicates that all following text should be discarded:
-`A[1:5]``1` -> `A1`, `A2`, ...
-- This is to keep KiCad's annotation checker happy on netlist export. That is, Eeschema will not recognize `A[1:5]` as a valid reference before running this script, but it will accept `A[1:5]``1`.
+#### A backtick `` ` `` indicates that all following text should be discarded:
+``A[1:5]`1`` -> `A1`, `A2`, ...
+- This is to keep KiCad's annotation checker happy on netlist export. That is, Eeschema will not recognize `A[1:5]` as a valid reference before running this script, but it will accept ``A[1:5]`1``.
 
 ## Netlist connection rules:
 When expanding nets, there are two valid cases for how they are connected:
