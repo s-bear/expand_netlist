@@ -62,3 +62,4 @@ When expanding nets, there are two valid cases for how they are connected:
 - [ ] Add syntax checking to the parser.
 - [ ] Add error messages.
 - [ ] Convert to C & integrate with the tool!
+- [ ] https://bugs.launchpad.net/kicad/+bug/1797038
