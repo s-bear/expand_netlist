@@ -70,7 +70,6 @@ from __future__ import print_function, division
 import kicad_netlist_reader
 import re
 import sys
-import time
 
 #monkey patch kicad_netlist_reader
 def xml_copy(self,deep=True):
@@ -294,28 +293,38 @@ def expand_name(name):
     return name_list
 
 class tstamper:
-    def __init__(self,start=None,use_hex=True):
-        if start is None:
-            self.next = int(time.time())
-        else:
-            self.next = start
+    def __init__(self,start,use_hex=True,used=set()):
+        self.next = start
         self.use_hex = use_hex
+        self.used = used
     
+    def set_next(self,nxt):
+        self.next = nxt
+
     def __call__(self):
         if self.use_hex:
             s = hex(self.next)[2:].upper()
         else:
             s = str(self.next)
-        self.next += 1
+        self.used.add(self.next)
+        while self.next in self.used:
+            self.next += 1
         return s
 
 def transform(netlist):
     fail = False
-    #initial "timestamp" for ID'ing new components:
-    ts = tstamper()
 
+    #scan for all the timestamps being used
+    if netlist.components:
+        tstamps = set()
+        for comp in netlist.components:
+            tstamps.add(int(comp.getTimestamp(),16))
+    
+    #make a timestamper -- increments tstamps, skips those already used
+    ts = tstamper(0,used=tstamps)
+    
     #we work with the xmlElement objects rather than the wrappers
-    #we'll fix up the wrapper objects later
+    #we'll fix up the wrapper objects after
     
     #first deal with replicating components:
     if netlist.components:
@@ -326,17 +335,22 @@ def transform(netlist):
             ref = child.attributes['ref']
             refs = expand_name(ref)
             if len(refs) > 1:
+                ts.set_next(int(child.getChild('tstamp').chars,16))
                 for r in refs:
                     c = child.copy() #deep copy
                     c.setAttribute('ref',r)
-                    c.getChild('tstamp').setChars(ts())
+                    c.getChild('tstamp').chars = ts()
                     new_kids.append(c)
             else: #not plural, don't change
                 new_kids.append(child)
         components.children = new_kids
+        netlist.components = [kicad_netlist_reader.comp(x) for x in new_kids]
+    
     #now with pins in each libpart
     for libpart in netlist.libparts:
         pins = libpart.element.getChild('pins')
+        #some parts have no pins:
+        if pins is None: continue
         new_kids = []
         for pin in pins.children:
             num = pin.attributes['num']
