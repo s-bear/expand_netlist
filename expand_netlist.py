@@ -21,7 +21,10 @@ components, pins, or nets with plural names as described below. It cannot
 handle hierarchical sheets yet.
 
 Command line:
-python "pathToFile/expand_netlist.py" "%I" "%O.net"
+python "pathToFile/expand_netlist.py" "%I" "%O.net" ["%O.xml"]
+
+If the optional last argument is provided, this script also outputs the xml netlist
+with names expanded, for use in BOM scripts or otherwise.
 
 Components references, pin names, and net names (labels) are expanded using the following operators:
   
@@ -127,8 +130,6 @@ kicad_netlist_reader.xmlElement.copy = xml_copy
 kicad_netlist_reader.xmlElement.formatNET = xml_formatNET
 kicad_netlist_reader.netlist.formatNET = net_formatNET
 
-
-
 def outer_join(lists, delim='', prefix='',suffix=''):
     """join a list of lists of strings in an outer-product fashion"""
     strings = []
@@ -207,11 +208,16 @@ def expand_range(start,stop,step=None):
     else:
         return [str(i) for i in r]
 
+
+def clean_name(name):
+    i = name.find('`')
+    if i >= 0: return name[:i]
+    else: return name
+
 _expand_tokens = re.compile(r'((?:\[|\]){1,2}|(?:[|,:/]))')
 def expand_name(name):
     #discard all after `
-    i = name.find('`')
-    if i >= 0: name = name[:i]
+    name = clean_name(name)
     #quick search before expensive parsing
     m = _expand_tokens.search(name)
     if m is None:
@@ -462,24 +468,37 @@ def transform(netlist):
 if __name__ == '__main__':
 
     #check usage:
-    if len(sys.argv) != 3:
-        print("Usage: ", __file__, "<generic_netlist.xml> <output.net>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print("Usage: ", __file__, "<generic_netlist.xml> <output.net> [<output.xml>]", file=sys.stderr)
         sys.exit(1)
     
     #load the netlist:
     net = kicad_netlist_reader.netlist(sys.argv[1])
 
-    #open output
+    #open outputs
     try:
         f = open(sys.argv[2],'w')
     except IOError:
-        e = "Can't open output file for writing: " + sys.argv[2]
+        print("Can't open output file for writing: " + sys.argv[2],file=sys.stderr)
         sys.exit(1)
+
+    f_xml = None
+    if len(sys.argv) > 3:
+        try:
+            f_xml = open(sys.argv[3],'w')
+        except IOError:
+            print("Can't open output file for writing: " + sys.argv[3],file=sys.stderr)
+            sys.exit(1)
 
     #edit netlist in place
     transform(net)
 
     #save to file
-    print(net.formatNET().encode('utf8'),file=f)
-    f.close()
+    with f:
+        print(net.formatNET().encode('utf8'),file=f)
+    
+    if f_xml is not None:
+        with f_xml:
+            print(net.formatXML().encode('utf8'),file=f_xml)
+    
     sys.exit(0)
