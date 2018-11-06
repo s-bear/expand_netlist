@@ -9,7 +9,6 @@ The output format is selected from the file ending.
 Command line:
 python "pathToFile/expand_bom.py" "%I" "%O.html"
 python "pathToFile/expand_bom.py" "%I" "%O.csv"
-
 """
 
 from __future__ import print_function
@@ -18,6 +17,10 @@ from expand_netlist import kicad_netlist_reader, clean_name, expand_name, parse_
 import sys, re
 
 kicad_netlist_reader.excluded_values += ['MountingHole.*','TestPoint.*']
+
+#additional fields:
+#the defaults are 'Ref','Count','Value','Library','Part','Footprint','Description'
+bom_extra_fields = ['Tolerance','Voltage','Note','Vendor','Part #','Purchased']
 
 _ref_re = re.compile(r'([0-9]+)|([A-Za-z]+|[^A-Za-z0-9]+)')
 def sort_key(name):
@@ -89,6 +92,10 @@ def comp_eq(a, b):
         and a.getField("Tolerance") == b.getField("Tolerance") \
         and a.getField("Voltage") == b.getField("Voltage")
 
+
+fields = ['Ref','Count','Value','Library','Part','Footprint','Description']
+fields += bom_extra_fields
+
 html_template = """
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
     "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -108,7 +115,7 @@ html_template = """
     </body>
 </html>
     """
-html_row = "\n<tr>" + "<td>{}</td>"*8 + "</tr>"
+html_row = "\n<tr>" + "<td>{}</td>"*len(fields) + "</tr>"
 html_header = html_row.replace('td','th')
 
 csv_template = """"Source","{source:}"
@@ -117,15 +124,15 @@ csv_template = """"Source","{source:}"
 "Component count","{compcount:}"
 {table:}
 """
-csv_row = '\n' + ','.join(['"{}"']*8)
+csv_row = '\n' + ','.join(['"{}"']*len(fields))
 csv_header = csv_row
 
 def make_bom(netlist,template,header,row):
     comps = getInterestingComponents(netlist)
     groups = groupComponents(comps, comp_eq)
     total_count = 0
-
-    table = header.format('Ref','Count','Value','Library','Part','Footprint','Description','Vendor')
+    
+    table = header.format(*fields)
     for g in groups:
         refs = ''
         count = 0
@@ -136,8 +143,9 @@ def make_bom(netlist,template,header,row):
             count += len(expand_name(comp.getRef()))
         total_count += count
         c = g[0]
+        extras = [c.getField(f) for f in bom_extra_fields]
         table += row.format(refs, count, c.getValue(), c.getLibName(), c.getPartName(),
-                            c.getFootprint(),c.getDescription(), c.getField('Vendor'))
+                            c.getFootprint(),c.getDescription(), *extras)
     bom = template.format(source=net.getSource(),
                    date=net.getDate(), tool=net.getTool(),
                    compcount=total_count, table=table)
