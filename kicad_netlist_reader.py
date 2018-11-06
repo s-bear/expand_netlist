@@ -54,6 +54,8 @@ excluded_references = [
 # regular expressions which match component 'Value' fields of components that
 # are to be excluded from the BOM.
 excluded_values = [
+    'MountingHole.*',
+    'TestPoint.*',
     'MOUNTHOLE',
     'SCOPETEST',
     'MOUNT_HOLE',
@@ -66,6 +68,12 @@ excluded_values = [
 excluded_footprints = [
     #'MOUNTHOLE'
     ]
+
+# regular expressions which match arbitrary fields of components that are to be
+# excluded from the BOM.
+excluded_fields = {
+    'Installed': ['NU']
+}
 
 #-----</Configure>---------------------------------------------------------------
 
@@ -439,6 +447,7 @@ class netlist():
         self.excluded_references = []
         self.excluded_values = []
         self.excluded_footprints = []
+        self.excluded_fields = {}
 
         if fname != "":
             self.load(fname)
@@ -564,6 +573,11 @@ class netlist():
 
         return ret       # this is a python 'set'
 
+    def sort_key(self,name):
+        """split a name into a tuple of digits, letters, and all else for sorting"""
+        parts = re.findall(r'([0-9]+)|([A-Za-z]+|[^A-Za-z0-9]+)',name)
+        return tuple(int(a) if a else b for a,b in parts)
+
     def getInterestingComponents(self):
         """Return a subset of all components, those that should show up in the BOM.
         Omit those that should not, by consulting the blacklists:
@@ -576,6 +590,7 @@ class netlist():
         del self.excluded_references[:]
         del self.excluded_values[:]
         del self.excluded_footprints[:]
+        self.excluded_fields.clear()
 
         for rex in excluded_references:
             self.excluded_references.append( re.compile( rex ) )
@@ -585,6 +600,11 @@ class netlist():
 
         for rex in excluded_footprints:
             self.excluded_footprints.append( re.compile( rex ) )
+        
+        for field in excluded_fields:
+            self.excluded_fields[field] = []
+            for rex in excluded_fields[field]:
+                self.excluded_fields[field].append(re.compile(rex))
 
         # the subset of components to return, considered as "interesting".
         ret = []
@@ -608,36 +628,36 @@ class netlist():
                     if mods.match(c.getFootprint()):
                         exclude = True
                         break;
-
             if not exclude:
-                # This is a fairly personal way to flag DNS (Do Not Stuff).  NU for
-                # me means Normally Uninstalled.  You can 'or in' another expression here.
-                if c.getField( "Installed" ) == 'NU':
-                    exclude = True
-
+                for field in self.excluded_fields:
+                    field_val = c.getField(field)
+                    for rex in self.excluded_fields[field]:
+                        if rex.match(field_val):
+                            exclude = True
+                            break
+                    if exclude: break
             if not exclude:
                 ret.append(c)
 
         # Sort first by ref as this makes for easier to read BOM's
-        def f(v):
-            return tuple(re.findall(r'[0-9]+|[A-z]+',v))
-            #return re.sub(r'([A-z]+)[0-9]+', r'\1', v) + '%08i' % int(re.sub(r'[A-z]+([0-9]+)', r'\1', v))
-        ret.sort(key=lambda g: f(g.getRef()))
+        ret.sort(key=lambda g: self.sort_key(g.getRef()))
 
         return ret
 
 
-    def groupComponents(self, components = None):
+    def groupComponents(self, components = None, eq=None):
         """Return a list of component lists. Components are grouped together
         when the value, library and part identifiers match.
 
         Keywords:
         components -- is a list of components, typically an interesting subset
         of all components, or None.  If None, then all components are looked at.
+        eq -- an equivalence test. If None, defaults to "lambda a,b: a == b"
         """
         if not components:
             components = self.components
-
+        if eq is None:
+            eq = lambda a,b: a == b
         groups = []
 
         # Make sure to start off will all components ungrouped to begin with
@@ -654,7 +674,7 @@ class netlist():
                 # Check every other ungrouped component against this component
                 # and add to the group as necessary
                 for ci in components:
-                    if ci.grouped == False and ci == c:
+                    if ci.grouped == False and eq(ci,c):
                         newgroup.append(ci)
                         ci.grouped = True
 
@@ -663,14 +683,11 @@ class netlist():
 
         # Each group is a list of components, we need to sort each list first
         # to get them in order as this makes for easier to read BOM's
-        def f(v):
-            return tuple(re.findall(r'[0-9]+|[A-z]+',v))
-            #return re.sub(r'([A-z]+)[0-9]+', r'\1', v) + '%08i' % int(re.sub(r'[A-z]+([0-9]+)', r'\1', v))
         for g in groups:
-            g = sorted(g, key=lambda g: f(g.getRef()))
+            g = sorted(g, key=lambda g: self.sort_key(g.getRef()))
 
         # Finally, sort the groups to order the references alphabetically
-        groups = sorted(groups, key=lambda group: f(group[0].getRef()))
+        groups = sorted(groups, key=lambda group: self.sort_key(group[0].getRef()))
 
         return groups
 
