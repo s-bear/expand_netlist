@@ -17,7 +17,7 @@ from __future__ import print_function
 from expand_netlist import kicad_netlist_reader, clean_name, expand_name, parse_letter_count
 import sys, re
 
-kicad_netlist_reader.excluded_values += ['MountingHole','TestPoint']
+kicad_netlist_reader.excluded_values += ['MountingHole.*','TestPoint.*']
 
 _ref_re = re.compile(r'([0-9]+)|([A-Za-z]+|[^A-Za-z0-9]+)')
 def sort_key(name):
@@ -111,11 +111,10 @@ html_template = """
 html_row = "\n<tr>" + "<td>{}</td>"*8 + "</tr>"
 html_header = html_row.replace('td','th')
 
-csv_template = """
-"Source", "{source:}"
-"Date", "{date:}"
-"Tool", "{tool:}"
-"Component count", "{compcount:}"
+csv_template = """"Source","{source:}"
+"Date","{date:}"
+"Tool","{tool:}"
+"Component count","{compcount:}"
 {table:}
 """
 csv_row = '\n' + ','.join(['"{}"']*8)
